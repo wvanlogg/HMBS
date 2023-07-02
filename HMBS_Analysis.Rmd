@@ -1,0 +1,1272 @@
+---
+#title: "HMBS R Notebook"
+#output: html_notebook
+---
+```{r}
+############
+#Required Libraries:
+library(data.table)
+library(stringr)
+library(scales)
+library(dplyr)
+library(stringi)
+library(zoo)
+library(ggplot2)
+library(tidyverse)
+library(beeswarm)
+library(yogitools)
+library(ggpubr)
+library(mixtools)
+library(yogiroc)
+library(pROC)
+library(maveLLR)
+library(yogitools)
+
+```
+
+```{r}
+##################################################
+#Weighted average scores for a combined map
+##################################################
+uHMBS_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/uHMBS_Scores_Floored.csv")
+colnames(uHMBS_Data)[2] <- "uHMBS_score"
+colnames(uHMBS_Data)[3] <- "uHMBS_sd"
+colnames(uHMBS_Data)[4] <- "uHMBS_df"
+colnames(uHMBS_Data)[5] <- "uHMBS_se"
+uHMBS_Data$uHMBS_inv_se2=abs(1/(uHMBS_Data[,"uHMBS_se"]^2))
+uHMBS_Data$uHMBS_score_se2=(uHMBS_Data[,uHMBS_inv_se2]*uHMBS_Data[,"uHMBS_score"])
+
+eHMBS_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/eHMBS_Scores_Floored.csv")
+colnames(eHMBS_Data)[2] <- "eHMBS_score"
+colnames(eHMBS_Data)[3] <- "eHMBS_sd"
+colnames(eHMBS_Data)[4] <- "eHMBS_df"
+colnames(eHMBS_Data)[5] <- "eHMBS_se"
+eHMBS_Data$eHMBS_inv_se2=abs(1/(eHMBS_Data[,"eHMBS_se"]^2))
+eHMBS_Data$eHMBS_score_se2=(eHMBS_Data[,eHMBS_inv_se2]*eHMBS_Data[,"eHMBS_score"])
+
+Combined_Data<-merge(uHMBS_Data,eHMBS_Data, by = "hgvs_pro", all=T)
+Combined_Data[is.na(Combined_Data)] <- 0
+Combined_Data$score=((Combined_Data$uHMBS_score_se2+Combined_Data$eHMBS_score_se2)/(Combined_Data$uHMBS_inv_se2+Combined_Data$eHMBS_inv_se2))
+Combined_Data$se<-1 / (1 / ((Combined_Data$uHMBS_se^2) + (Combined_Data$eHMBS_se^2)))
+Floored_Combined_Data<-Combined_Data[,c(1,14,15)]
+#write.csv(Combined_Data,"Combined_unfloored.csv")
+```
+
+```{r}
+#################################
+#QC of the maps functional scores
+#################################
+#Correlation between erythroid and ubiquitous function impact scores
+uHMBS<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/uHMBS_Scores_Floored.csv")
+uHMBS<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/uHMBS_Scores_Floored.csv")
+eHMBS<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/eHMBS_Scores_Floored.csv")
+uHMBS_eHMBS_map_scores<-merge(uHMBS, eHMBS, by = "hgvs_pro")
+
+uHMBS<-uHMBS_eHMBS_map_scores$score.x
+eHMBS<-uHMBS_eHMBS_map_scores$score.y
+
+#Plot correlation be eHMBS and uHMBS map
+plot(uHMBS,eHMBS, maxFreq = NULL, xlim = range(uHMBS, na.rm = TRUE), ylim = range(eHMBS, na.rm = TRUE), ylab="uHMBS", xlab = "eHMBS", col = alpha("black", 0.1), pch=16, main="Correspondence between erythroid-specific and ubiquitous HMBS isoform functional scores")
+cor.test(uHMBS_eHMBS_map_scores$score.x, uHMBS_eHMBS_map_scores$score.y,
+         method = "pearson")
+abline(h=c(0,-1), col=c("darkblue", "darkblue"), lty=c(2,2), lwd=c(1, 2))
+abline(v=c(0,-1), col=c("darkblue", "darkblue"), lty=c(2,2), lwd=c(1, 2))
+
+abline(h=c(1,-1), col=c("dark orange", "dark orange"), lty=c(2,2), lwd=c(1, 2))
+abline(v=c(1,-1), col=c("dark orange", "dark orange"), lty=c(2,2), lwd=c(1, 2))
+
+abline(lm(uHMBS ~ eHMBS), col = "darkred", lwd = 1)
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#Function impact score distribution of the eHMBS map
+data <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Unfloored.csv")
+stop.is <- which(grepl("Ter$", data$hgvs_pro))
+syn.is <- which(grepl("=$", data$hgvs_pro))
+miss.is <- setdiff(1:nrow(data), c(stop.is, syn.is))
+
+stp <- data[c(stop.is), "eHMBS.score"]
+syn <- data[c(syn.is), "eHMBS.score"]
+miss <- data[c(miss.is), "eHMBS.score"]
+
+allScores <- c(syn, stp, miss)
+left <- floor(quantile(allScores, 0.01, na.rm = TRUE))
+right <- ceiling(quantile(allScores, 0.99, na.rm = TRUE))
+
+breaks <- seq(-2.5,3,0.1)
+
+synHist <- hist(syn, breaks = breaks, plot = FALSE)
+stpHist <- hist(stp, breaks = breaks, plot = FALSE)
+misHist <- hist(miss, breaks = breaks, plot = FALSE)
+q95 <- quantile(c(syn, stp), 0.95)
+
+#Plot syn. and nonsense variants for the eHMBS map
+par(mfrow = c(2:1))
+op <- par(mar=c(2,4,2,1)+.1)
+xs <- barplot(
+  rbind(synHist$density,stpHist$density),
+  beside=TRUE,col=c("darkolivegreen4","firebrick3"),
+  border=NA, ylab="density", xaxt = "n", space=c(0,0), main="Functional score distribution of the erythroid-specific HMBS Map")
+
+abline(h=seq(0,2,0.5), col="gray", lty="dotted" )
+
+pips <- left:right
+pipx <- colMeans(xs[,which(breaks %in% pips)])
+axis(1,at=pipx,labels=pips)
+
+legend("left",
+       c("nonsense","synonymous","missense"),
+       fill=c("firebrick3","darkolivegreen4","gray"),
+       border=NA,bty="n"
+)
+par(mar=c(1,4,0,1)+.1)
+#Plot missense variants for the eHMBS map
+xs <- barplot(
+  -misHist$density, col=c("#BFBEBE"),
+  border="#CCCCCC",ylab="density",space=c(0,0)
+)
+abline(h=seq(0,-0.8,-0.2), col="gray", lty="dotted" )
+
+x0 <- xs[which(breaks==0),1]
+x1 <- xs[which(breaks==1),1]
+uCoord <- function(x)  x0 + x*(x1-x0)
+abline(v=uCoord(median(syn)),col="darkolivegreen4",lwd=2,lty="dotted")
+abline(v=uCoord(median(stp)),col="firebrick3",lwd=2,lty="dotted")
+text(
+  uCoord(median(syn)),
+  -max(misHist$density)/3,
+  sprintf("Synonymous median\n%.03f",median(syn)),
+  col="darkolivegreen4"
+)
+text(
+  uCoord(median(stp)),
+  -2*max(misHist$density)/3,
+  sprintf("Nonsense median\n%.03f",median(stp)),
+  col="firebrick3"
+)
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#Function impact score distribution of the uHMBS map
+data <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Unfloored.csv")
+stop.is <- which(grepl("Ter$", data$hgvs_pro))
+syn.is <- which(grepl("=$", data$hgvs_pro))
+miss.is <- setdiff(1:nrow(data), c(stop.is, syn.is))
+
+stp <- data[c(stop.is), "uHMBS.score"]
+syn <- data[c(syn.is), "uHMBS.score"]
+miss <- data[c(miss.is), "uHMBS.score"]
+
+allScores <- c(syn, stp, miss)
+left <- floor(quantile(allScores, 0.01, na.rm = TRUE))
+right <- ceiling(quantile(allScores, 0.99, na.rm = TRUE))
+
+breaks <- seq(-2.5, 2.5, 0.1)
+
+synHist <- hist(syn, breaks = breaks, plot = FALSE)
+stpHist <- hist(stp, breaks = breaks, plot = FALSE)
+misHist <- hist(miss, breaks = breaks, plot = FALSE)
+q95 <- quantile(c(syn, stp), 0.95)
+
+#Plot syn. and nonsense variants for the uHMBS map
+par(mfrow = c(2:1))
+op <- par(mar=c(2,4,2,1)+.1)
+xs <- barplot(
+  rbind(synHist$density,stpHist$density),
+  beside=TRUE,col=c("#AACB69","firebrick3"),
+  border=NA, ylab="density", xaxt = "n", space=c(0,0), main="Functional score distribution of the ubiquitous HMBS map")
+
+abline(h=seq(0,2,0.5), col="gray", lty="dotted" )
+
+pips <- left:right
+pipx <- colMeans(xs[,which(breaks %in% pips)])
+axis(1,at=pipx,labels=pips)
+
+legend("left",
+       c("nonsense","synonymous","missense"),
+       fill=c("firebrick3","darkolivegreen3","gray"),
+       border=NA,bty="n"
+)
+par(mar=c(1,4,0,1)+.1)
+#Plot missense variants for the uHMBS map
+xs <- barplot(
+  -misHist$density, col=c("#BFBEBE"),
+  border="#CCCCCC",ylab="density",space=c(0,0)
+)
+abline(h=seq(0,-0.8,-0.2), col="gray", lty="dotted" )
+
+x0 <- xs[which(breaks==0),1]
+x1 <- xs[which(breaks==1),1]
+uCoord <- function(x)  x0 + x*(x1-x0)
+abline(v=uCoord(median(syn)),col="darkolivegreen4",lwd=2,lty="dotted")
+abline(v=uCoord(median(stp)),col="firebrick3",lwd=2,lty="dotted")
+text(
+  uCoord(median(syn)),
+  -max(misHist$density)/3,
+  sprintf("Synonymous median\n%.03f",median(syn)),
+  col="darkolivegreen4"
+)
+text(
+  uCoord(median(stp)),
+  -2*max(misHist$density)/3,
+  sprintf("Nonsense median\n%.03f",median(stp)),
+  col="firebrick3"
+)
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#Function impact score distribution of the combined map
+data <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Unfloored.csv")
+stop.is <- which(grepl("Ter$", data$hgvs_pro))
+syn.is <- which(grepl("=$", data$hgvs_pro))
+miss.is <- setdiff(1:nrow(data), c(stop.is, syn.is))
+
+stp <- data[c(stop.is), "score"]
+syn <- data[c(syn.is), "score"]
+miss <- data[c(miss.is), "score"]
+
+allScores <- c(syn, stp, miss)
+left <- floor(quantile(allScores, 0.01, na.rm = TRUE))
+right <- ceiling(quantile(allScores, 0.99, na.rm = TRUE))
+
+breaks <- seq(-2.5, 2.5, 0.1)
+
+synHist <- hist(syn, breaks = breaks, plot = FALSE)
+stpHist <- hist(stp, breaks = breaks, plot = FALSE)
+misHist <- hist(miss, breaks = breaks, plot = FALSE)
+q95 <- quantile(c(syn, stp), 0.95)
+
+#Plot syn. and nonsense variants for the combined map
+par(mfrow = c(2:1))
+op <- par(mar=c(2,4,2,1)+.1)
+xs <- barplot(
+  rbind(synHist$density,stpHist$density),
+  beside=TRUE,col=c("#AACB69","firebrick3"),
+  border=NA, ylab="density", xaxt = "n", space=c(0,0), main="Functional score distribution of the combined map")
+
+abline(h=seq(0,2,0.5), col="gray", lty="dotted" )
+
+pips <- left:right
+pipx <- colMeans(xs[,which(breaks %in% pips)])
+axis(1,at=pipx,labels=pips)
+
+legend("left",
+       c("nonsense","synonymous","missense"),
+       fill=c("firebrick3","darkolivegreen3","gray"),
+       border=NA,bty="n"
+)
+par(mar=c(1,4,0,1)+.1)
+#Plot missense variants for the combined map
+xs <- barplot(
+  -misHist$density, col=c("#BFBEBE"),
+  border="#CCCCCC",ylab="density",space=c(0,0)
+)
+abline(h=seq(0,-0.8,-0.2), col="gray", lty="dotted" )
+
+x0 <- xs[which(breaks==0),1]
+x1 <- xs[which(breaks==1),1]
+uCoord <- function(x)  x0 + x*(x1-x0)
+abline(v=uCoord(median(syn)),col="darkolivegreen4",lwd=2,lty="dotted")
+abline(v=uCoord(median(stp)),col="firebrick3",lwd=2,lty="dotted")
+text(
+  uCoord(median(syn)),
+  -max(misHist$density)/3,
+  sprintf("Synonymous median\n%.03f",median(syn)),
+  col="darkolivegreen4"
+)
+text(
+  uCoord(median(stp)),
+  -2*max(misHist$density)/3,
+  sprintf("Nonsense median\n%.03f",median(stp)),
+  col="firebrick3"
+)
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+```
+
+```{r}
+##################################################################
+#Compare map and predictor scores for hyper-complementing variants 
+#################################################################
+Combined_Map_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Combined_Map_Data<-Combined_Map_Data[,-c(3)]
+colnames(Combined_Map_Data)[2]<-"Combined_Map"
+
+ESM1b_Data<-fread("~/Desktop/Data_Sets/Computational_Predictor_Scores/ESM1b.csv")
+colnames(ESM1b_Data)[1]<-"hgvs_pro"
+colnames(ESM1b_Data)[2]<-"ESM1b"
+ESM1b_Data$hgvs_pro <- sub("^", "p.", ESM1b_Data$hgvs_pro )
+ESM1b_Data<-ESM1b_Data[,-c(3)]
+ESM1b_Data$ESM1b<-ESM1b_Data$ESM1b*-1
+ESM1b_Data$ESM1b<-(ESM1b_Data$ESM1b-20)*-1
+
+ESM1b_Data$hgvs_pro <- gsub("A", "Ala", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("R", "Arg", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("N", "Asn", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("D", "Asp", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("C", "Cys", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("Q", "Gln", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("E", "Glu", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("G", "Gly", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("H", "His", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("I", "Ile", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("L", "Leu", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("K", "Lys", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("M", "Met", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("F", "Phe", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("P", "Pro", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("S", "Ser", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("T", "Thr", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("W", "Trp", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("Y", "Tyr", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- gsub("V", "Val", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- sub("Glyln", "Gln", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- sub("Glylu", "Glu", ESM1b_Data$hgvs_pro)
+ESM1b_Data$hgvs_pro <- sub("Prohe", "Phe", ESM1b_Data$hgvs_pro)
+
+Hyper_Data<-merge(ESM1b_Data, Combined_Map_Data, by = "hgvs_pro")
+
+Hyper_Data<-Hyper_Data[Hyper_Data$Combined_Map > 1.2,]
+Hyper_Data<-na.omit(Hyper_Data)
+Hyper_Data$Combined_Map<-1/Hyper_Data$Combined_Map
+
+rescaled_ESM1b <- (Hyper_Data$ESM1b - min(Hyper_Data$ESM1b)) / (max(Hyper_Data$ESM1b) - min(Hyper_Data$ESM1b))
+
+rescaled_Map <- Hyper_Data$Combined_Map
+
+# Combine all scores into a single data frame and reshape
+Map_Preditor_Hyper_Scores <- data.table(rescaled_ESM1b, rescaled_Map)
+
+Map_Preditor_Hyper_Scores <- melt(Map_Preditor_Hyper_Scores)
+Map_Preditor_Hyper_Scores$value<-as.numeric(Map_Preditor_Hyper_Scores$value)
+Map_Preditor_Hyper_Scores$variable<-as.character(Map_Preditor_Hyper_Scores$variable)
+
+# Color groups based on deleteriousness 
+Map_Preditor_Hyper_Scores$color_group <- cut(Map_Preditor_Hyper_Scores$value, breaks = c(0, 0.25, 0.5, 0.75, 1), 
+                                             labels = c("#395FCD", "#667DD1", "#AEBBE6", "#D3D9F1"), include.lowest = TRUE)
+
+# Plot with discrete color scale
+ggplot(Map_Preditor_Hyper_Scores, aes(x = variable, y = value)) +
+  theme_classic() +
+  geom_boxplot() +
+  geom_jitter(aes(x = variable, y = value, color = color_group), stroke = 0.5) +
+  scale_color_manual(values = c("#395FCD", "#667DD1", "#AEBBE6", "#D3D9F1"),
+                     labels = c("0.25 to 0", "0.5 to 0.25", "0.75 to 0.5", "1 to 0.75")) +
+  labs(color = "Group") +
+  ylab("level of functionality") + xlab("")+
+  theme(legend.position = "right")+
+  guides(color = guide_legend(reverse = TRUE))
+
+# Plot with single color
+ggplot(Map_Preditor_Hyper_Scores, aes(x = variable, y = value)) +
+  theme_classic() +
+  geom_boxplot() +
+  geom_jitter(col = alpha("black", 0.5), stroke = 0.5, width = 0.2) +
+  labs(color = "Group") +
+  ylab("Level of Functionality") +
+  xlab("") +
+  theme(legend.position = "right")
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+```
+
+```{r}
+####################################################
+#Functional score correlation with specific activity
+####################################################
+VE_data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Specific_Activity_Data<-fread("~/Desktop/Data_Sets/HMBS_Biochemistry/Enzyme_Activity.csv")
+new_col_names <- as.character(Specific_Activity_Data[2, ])
+colnames(Specific_Activity_Data) <- new_col_names
+Specific_Activity_Data <- Specific_Activity_Data[-c(1,2), ]
+Specific_Activity_Data <- Specific_Activity_Data[,c(1,5) ]
+Specific_Activity_Data$`activity relative to wt (%)` <- as.numeric(Specific_Activity_Data$`activity relative to wt (%)`)
+
+invitro_activity_mean<-Specific_Activity_Data[, .(sum(`activity relative to wt (%)`)/(length(`activity relative to wt (%)`))), by = "HGVS"]
+colnames(invitro_activity_mean)[1] <- "hgvs_pro"
+colnames(invitro_activity_mean)[2] <- "activity"
+
+Comparison<-merge(invitro_activity_mean,VE_data, by="hgvs_pro", na.omit=TRUE)
+
+x<-Comparison$activity
+y<-Comparison$score
+
+cor(Comparison$activity, Comparison$score)
+cor.test(Comparison$activity, Comparison$score,
+         method = "spearman", use="pairwise.complete.obs", exact=FALSE)
+m <- nls(y ~ a + b * I(x^z), start = list(a = 1, b = 1, z = 1))
+
+#Plot correlation between scores and specific enzyme activity
+plot(y, x, 
+     xlab="functionality score", ylab="relative enzyme actvity", pch=19, main="Correlation between HMBS scores and enzymatic activity")
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+```
+
+```{r}
+#################################################################
+#Comparison of functional scores and predicted free energy change 
+#################################################################
+map_scores <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/uHMBS_Scores_Floored.csv", comment.char="#")
+maveVisOutputNoStop <- map_scores[!grepl("=", map_scores$hgvs_pro),]
+maveVisOutputNoStop <- maveVisOutputNoStop[!grepl("Ter", maveVisOutputNoStop$hgvs_pro),]
+colnames(maveVisOutputNoStop)[1] = "hgvsp"
+start = 1
+end = 357
+
+#Moving window analysis for functional impact scores
+Map_scores <- c()
+for (i in start:end) {
+  Map_scores[i] <- print(mean(maveVisOutputNoStop$score[grepl(i, maveVisOutputNoStop$hgvsp)]), na.rm = T)
+}
+window = 5
+
+#Moving window analysis for ΔΔG values
+ddG_scores <- read.csv("~/Desktop/Data_Sets/HMBS_Biochemistry/DDGun_Scores.csv", comment.char="#", header=FALSE)
+ddG_scores <- ddG_scores[ -c(1,2,4) ]
+colnames(ddG_scores)[1] = "hgvs_pro"
+colnames(ddG_scores)[2] = "scores"
+maveVisOutputNoStop <- ddG_scores[!grepl("=", ddG_scores$hgvs_pro),]
+maveVisOutputNoStop <- maveVisOutputNoStop[!grepl("Ter", maveVisOutputNoStop$hgvs_pro),]
+colnames(maveVisOutputNoStop)[1] = "hgvsp"
+colnames(maveVisOutputNoStop)[2] = "scores"
+start = 1
+end = 357
+ddG_scores <- c()
+for (i in start:end) {
+  ddG_scores[i] <- print(mean(maveVisOutputNoStop$score[grepl(i, maveVisOutputNoStop$hgvsp)]), na.rm = T)
+}
+window = 5
+
+#Plot window analyses (functional scores and ΔΔG values)
+#par(mfrow=c(2,1))
+plot(rollmean(Map_scores, k = window), xlab = "", xaxt="n", ylab = "Functional Score (Pos. Mean)", type = "l")
+plot(rollmean(ddG_scores, k = window), xlab = "Position", ylab = "ΔΔG (Pos. Mean)", type = "l")
+
+par(mar=c(5, 4, 4, 6) + 0.1)
+plot(rollmean(Map_scores, k = window), pch=16, axes=FALSE, ylim=c(0,1), xlab="", ylab="", 
+     type="b",col="black", main="Moving average of variant map score and ΔΔG")
+axis(2, ylim=c(0,1),col=alpha("black", 0.75),las=1)  ## las=1 makes horizontal labels
+mtext("Functional Score",side=2,line=2.5)
+box()
+par(new=TRUE, mar=c(5, 4, 4, 6) + 0.1)
+plot(rollmean(ddG_scores, k = window), pch=16,  xlab="", ylab="", ylim=c(-3,3), 
+     axes=FALSE, type="b", col=alpha("red", 0.75))
+mtext("ΔΔG",side=4,col="red",line=4) 
+axis(4, ylim=c(-2,2), col="red",col.axis="red",las=1)
+position<-seq(1,364)
+axis(1,pretty(range(position),40))
+mtext("AA Position",side=1,col="black",line=2.5)
+abline(h=c(0,-1), col=c("grey", "grey"), lty=c(1,2), lwd=c(1, 2))
+
+#Plot correlation between window analyses (functional scores and ΔΔG values)
+x<-rollmean(Map_scores, k = window)
+y<-rollmean(ddG_scores, k = window)
+
+cor.test(x, y,
+         method = "spearman", use="pairwise.complete.obs", exact=FALSE)
+m <- nls(y ~ a + b * I(x^z), start = list(a = 1, b = 1, z = 1))
+
+plot((rollmean(Map_scores, k=window)), rollmean(ddG_scores, k=window), 
+     xlab="functionality score (moving average per 5 AA)", ylab="ΔΔG (moving average per 5 AA)", pch=19, xlim=c(0,1), main="Moving window analyses for comparison of functionality scores and ΔΔG values")
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#Comparison of functional scores and predicted free energy change at the individual variant level
+Combined_Map_Data <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/uHMBS_Scores_Floored.csv", comment.char="#")
+Combined_Map_Data <- Combined_Map_Data[!grepl("=", Combined_Map_Data$hgvs_pro),]
+Combined_Map_Data <- Combined_Map_Data[!grepl("Ter", Combined_Map_Data$hgvs_pro),]
+Combined_Map_Data<- Combined_Map_Data[ ,c(1,2)]
+colnames(Combined_Map_Data)[2] = "Combined_Map_score"
+
+ddG_Data <- read.csv("~/Desktop/Data_Sets/HMBS_Biochemistry/DDGun_Scores.csv", comment.char="#", header=FALSE)
+ddG_Data <- ddG_Data[ ,c(3,5)]
+colnames(ddG_Data)[1] = "hgvs_pro"
+ddG_Data$hgvsp<-ddG_Data$hgvs_pro
+colnames(ddG_Data)[2] = "ddG_score"
+ddG_Data$hgvs_pro<-paste0("p.",ddG_Data$hgvs_pro)
+
+ddG_Data$hgvs_pro <- gsub("A", "Ala", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("R", "Arg", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("N", "Asn", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("D", "Asp", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("C", "Cys", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("Q", "Gln", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("E", "Glu", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("G", "Gly", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("H", "His", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("I", "Ile", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("L", "Leu", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("K", "Lys", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("M", "Met", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("F", "Phe", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("P", "Pro", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("S", "Ser", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("T", "Thr", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("W", "Trp", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("Y", "Tyr", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- gsub("V", "Val", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- sub("Glyln", "Gln", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- sub("Glylu", "Glu", ddG_Data$hgvs_pro)
+ddG_Data$hgvs_pro <- sub("Prohe", "Phe", ddG_Data$hgvs_pro)
+
+ddG_Data <- ddG_Data[!grepl("=", ddG_Data$hgvs_pro),]
+ddG_Data <- ddG_Data[!grepl("Ter", ddG_Data$hgvs_pro),]
+
+correlation_Data <- merge(Combined_Map_Data, ddG_Data, by = "hgvs_pro")
+correlation_Data$pos <- gsub("[^0-9]+", "", correlation_Data$hgvs_pro)
+
+Residue_Positions <- read.csv("~/Desktop/Data_Sets/HMBS_Biochemistry/HMBS_Structural_Residue_Positions.csv")
+AS_positions <- Residue_Positions$Active.Site.Residues
+
+#Plot individual variant scores (functional and ΔΔG values)
+plot(correlation_Data$Combined_Map_score, correlation_Data$ddG_score,
+     maxFreq = NULL, xlim = range(correlation_Data$Combined_Map_score, na.rm = TRUE),
+     ylim = range(correlation_Data$ddG_score, na.rm = TRUE), ylab = "ΔΔG score",
+     xlab = "functionality score", col = alpha("black", 0.1), pch = 16, main = "Correlation between functionality scores and predicted ΔΔG values")
+
+subset_data <- correlation_Data[(correlation_Data$pos >= 316 & correlation_Data$pos <= 319) &
+                                  (correlation_Data$ddG_score > -1) &
+                                  (correlation_Data$Combined_Map_score < 0.5), ]
+
+points(subset_data$Combined_Map_score, subset_data$ddG_score, col = alpha("yellow", 0.75), pch = 16)
+
+active_site_subset <- correlation_Data[correlation_Data$pos %in% AS_positions, ]
+points(active_site_subset$Combined_Map_score, active_site_subset$ddG_score, col = alpha("blue", 0.15), pch = 16)
+
+cor.test(correlation_Data$Combined_Map_score, correlation_Data$ddG_score, method = "pearson")
+abline(h = c(-1), col = "darkorange", lty = 2, lwd = 1)
+abline(v = c(0.5), col = "darkorange", lty = 2, lwd = 1)
+
+abline(lm(correlation_Data$ddG_score ~ correlation_Data$Combined_Map_score), col = "darkred", lwd = 1)
+
+correlation_coefficient <- cor(correlation_Data$Combined_Map_score, correlation_Data$ddG_score, method = "pearson")
+r_squared <- correlation_coefficient^2
+print(paste("R-squared value:", r_squared))
+cor.test(correlation_Data$Combined_Map_score, correlation_Data$ddG_score, method = "pearson")
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#Plot ddG heat map for all HMBS variants
+ddG_scores <- read.csv("~/Desktop/Data_Sets/HMBS_Biochemistry/DDGun_Scores.csv", comment.char = "#", header = FALSE)
+ddG_scores <- ddG_scores[, c(3, 5)]
+colnames(ddG_scores)[1] <- "hgvs_pro"
+colnames(ddG_scores)[2] <- "scores"
+ddG_scores$Functional <- substr(ddG_scores$hgvs_pro, 1, 1)
+ddG_scores$pos <- gsub("[^0-9]+", "", ddG_scores$hgvs_pro)
+ddG_scores$substitution_AA <- substr(ddG_scores$hgvs_pro, nchar(ddG_scores$hgvs_pro), nchar(ddG_scores$hgvs_pro))
+
+unique_pro <- unique(substring(ddG_scores$hgvs_pro, 1, nchar(ddG_scores$hgvs_pro) - 1))
+Syn_Variants <- data.frame(hgvs_pro = unique_pro)
+Syn_Variants$Functional <- substr(Syn_Variants$hgvs_pro, 1, 1)
+Syn_Variants$pos <- gsub("[^0-9]+", "", Syn_Variants$hgvs_pro)
+Syn_Variants$substitution_AA <- Syn_Variants$Functional
+Syn_Variants$scores <- "NA"
+Syn_Variants$hgvs_pro <- paste0(Syn_Variants$Functional, Syn_Variants$pos, Syn_Variants$Functional)
+Syn_Variants <- Syn_Variants[, c(1, 5, 2:4)]
+
+ddG_scores <- rbind(ddG_scores, Syn_Variants)
+
+ddG_scores$scores <- as.numeric(ddG_scores$scores)
+ddG_scores <- ddG_scores %>% arrange(as.numeric(pos))
+
+breaks <- c(-Inf, -5, -4, -3, -2, -1, 0, 1, Inf)
+labels <- c("#395FCD", "#667DD1", "#AEBBE6", "#D3D9F1", "#F7F8FD", "#FCF6F6", "#EDCDCD", "#DFA6A5", "#FCED98")
+
+ddG_scores$color_group <- cut(ddG_scores$scores, breaks = breaks, labels = FALSE, include.lowest = TRUE)
+ddG_scores$color_group <- factor(ddG_scores$color_group, levels = c(seq_along(breaks[-length(breaks)]), length(breaks)))
+
+ddG_scores$breaks_labels <- cut(ddG_scores$scores, breaks = breaks, labels = breaks[-length(breaks)], include.lowest = TRUE)
+ddG_scores$breaks_labels[is.na(ddG_scores$breaks_labels)] <- "NA"
+
+# Create the completely vectorized heat map
+ggplot(ddG_scores, aes(x = as.numeric(pos), y = substitution_AA)) +
+  geom_tile(aes(fill = as.factor(color_group))) +
+  labs(x = "AA position", y = "AA residue", fill = "ΔΔG scores", title = "Heat map of DDGun (ΔΔG) values for HMBS") +
+  scale_fill_manual(values = c(labels, "#FCED98"),
+                    breaks = c(seq_along(breaks[-length(breaks)]), NA),
+                    labels = c(breaks[-length(breaks)], "Functional"),
+                    na.value = "#FCED98") +
+  theme_bw()
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+
+```
+
+```{r}
+####################################################
+#Comparison of core and surface HMBS residues scores
+####################################################
+#Requires predetermined FreeSASA scores!
+data <-read.table("~/Desktop/Data_Sets/HMBS_Biochemistry/HMBS_FreeSASA_Scores.txt")
+freesasa_data <- data.frame(data$V4, data$V6)
+names(freesasa_data)[names(freesasa_data) == "data.V6"] <- "sasa"
+names(freesasa_data)[names(freesasa_data) == "data.V4"] <- "from_aa"
+allatoms_rel<-density(freesasa_data$sasa)
+
+#Plot #1 of freesasa values to determine cut-off for core and surface residues
+plot(allatoms_rel, col="turquoise2")
+abline(v=20, col="red")
+abline(v=40, col="green")
+
+#Plot #2 of freesasa values to determine cut-off for core and surface residues
+fit <- normalmixEM(freesasa_data$sasa)
+threshold <- fit$mu[2]
+ggplot(freesasa_data, aes(x = sasa)) +
+  geom_density(aes(fill = ifelse(sasa >= threshold, "Population 2", "Population 1")), alpha = 0.5) +
+  geom_vline(xintercept = threshold, linetype = "dashed", color = "blue") +
+  labs(x = "SASA", y = "Density") +
+  scale_fill_manual(values = c("Population 1" = "red", "Population 2" = "green")) +
+  theme_minimal()
+
+ignore<-read.csv("~/Desktop/Data_Sets/HMBS_Biochemistry/HMBS_Structural_Residue_Positions.csv")
+ignore_AS_positions<-ignore$Active.Site.Residues
+ignore_DI_positions<-ignore$Interface.Residues
+
+#Filter sasa20 values
+sasa20 <- filter(freesasa_data, sasa < 20 )
+filtered_sasa20 <- filter(sasa20, !from_aa %in% ignore_AS_positions)
+filtered_sasa20 <- filter(filtered_sasa20, !from_aa %in% ignore_DI_positions) 
+filtered_sasa20$from_aa <- as.numeric(filtered_sasa20$from_aa)
+
+#Filter sasa40 values
+sasa40 <- filter(freesasa_data, sasa > 40)
+sasa40$from_aa <- as.numeric(sasa40$from_aa)
+filtered_sasa40 <- filter(sasa40, !from_aa %in% ignore_AS_positions)
+filtered_sasa40 <- filter(filtered_sasa40, !from_aa %in% ignore_DI_positions)
+filtered_sasa40$from_aa <- as.numeric(filtered_sasa40$from_aa)
+
+#From combined map, obtain mean scores for each position
+Map_Scores<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Map_Scores[, from_aa := str_extract_all(hgvs_pro, "\\w+\\d+")]
+Map_Scores[, from_aa := str_extract(hgvs_pro, "\\d+")]
+positional_mean_scores<-Map_Scores[, .(sum(score, na.rm = T) / length(score)), by = "from_aa"]
+positional_mean_scores$from_aa <- as.numeric(positional_mean_scores$from_aa)
+names(positional_mean_scores)[names(positional_mean_scores) == "V1"] <- "score"
+
+#Combine all data (core, surface, interface and active site scores)
+HMBS_Core_Residue_Scores<-merge(positional_mean_scores, filtered_sasa20, by="from_aa")
+HMBS_Surface_Residue_Scores<-merge(positional_mean_scores, filtered_sasa40, by="from_aa")
+HMBS_Active_Site_Scores<-subset(positional_mean_scores, from_aa %in% ignore$Active.Site.Residues)
+HMBS_Active_Site_Scores<-subset(positional_mean_scores, from_aa %in% ignore$Active.Site.Residues)
+HMBS_Interface_Scores<-subset(positional_mean_scores, from_aa %in% ignore$Interface.Residues)
+
+combined_data <- rbind(
+  data.frame(score = HMBS_Core_Residue_Scores$score, group = "Core Residue"),
+  data.frame(score = HMBS_Surface_Residue_Scores$score, group = "Surface Residue"),
+  data.frame(score = HMBS_Active_Site_Scores$score, group = "Active Site"),
+  data.frame(score = HMBS_Interface_Scores$score, group = "Interface")
+)
+
+#Beeswarm plot functional scores for core, surface, dimer-interface and active-site for comparison
+beeswarm(x= list(HMBS_Core_Residue_Scores$score,HMBS_Surface_Residue_Scores$score,HMBS_Interface_Scores$score,HMBS_Active_Site_Scores$score),
+         log = TRUE, pch = 16,
+        spacing = .5, col = c("#3D3D3D", "#5F8BA4", "#B30D44","#E48E21"), xlab="position of residues", ylab="median functionality score per AA",cex.main=1.7, cex.lab=1.7, cex.axis=1.7, labels = c('core', 'surface', 'dimer interface', 'active site'), main= "Median functionality scores of variants at different amino acid positions")
+bxplot(x = list(HMBS_Core_Residue_Scores$score,HMBS_Surface_Residue_Scores$score,HMBS_Interface_Scores$score,HMBS_Active_Site_Scores$score), add = TRUE)
+abline(h=0, col="red", lty=3)
+abline(h=1, col="chartreuse3", lty=3, lwd=1)
+
+median_core<-median(HMBS_Core_Residue_Scores$score, na.rm=TRUE)
+median_surface<-median(HMBS_Surface_Residue_Scores$score, na.rm=TRUE)
+delta_core_surface_median<-median_core-median_surface
+median_dimer_interface<-median(HMBS_Interface_Scores$score, na.rm=TRUE)
+delta_interface_surface<-median_dimer_interface-median_surface
+
+wilcox.test(HMBS_Core_Residue_Scores$score,HMBS_Surface_Residue_Scores$score, mu=0, alt="two.sided", conf.int=T, conf.level = 0.95, paired=F, correc=T)
+wilcox.test(HMBS_Surface_Residue_Scores$score,HMBS_Interface_Scores$score, mu=0, alt="two.sided", conf.int=T, conf.level = 0.95, paired=F, correc=T)
+
+#Box plot (jitter) for the above...
+ggplot(combined_data, aes(x = group, y = score)) +
+  theme_classic() +
+  geom_boxplot() +
+  geom_jitter(position = position_jitter(width = 0.2), col = alpha("black", 0.5)) +
+  ylab("Mean Functionality Score") +
+  labs(title = "Functionality scores for different residue groups")
+# :::::::::::::::::::::::::::::::::::::::::::::::::::
+
+```
+
+```{r}
+#####################################################
+# Evaluation of variant effect prediction performance
+#####################################################
+#Retrieve datasets (variant effect maps and computational predictors)
+Combined_Map_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Combined_Map_Data<-Combined_Map_Data[,-c(3)]
+colnames(Combined_Map_Data)[2]<-"combined_score"
+Combined_Map_Data$combined_score<-Combined_Map_Data$combined_score*-1
+
+uHMBS_Map_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/uHMBS_Scores_Floored.csv")
+uHMBS_Map_Data<-uHMBS_Map_Data[,c(1,2)]
+colnames(uHMBS_Map_Data)[2]<-"uHMBS_Map"
+uHMBS_Map_Data$uHMBS_Map<-uHMBS_Map_Data$uHMBS_Map*-1
+
+eHMBS_Map_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/eHMBS_Scores_Floored.csv")
+eHMBS_Map_Data<-eHMBS_Map_Data[,c(1,2)]
+colnames(eHMBS_Map_Data)[2]<-"eHMBS_Map"
+eHMBS_Map_Data$eHMBS_Map<-eHMBS_Map_Data$eHMBS_Map*-1
+
+DeMaSk_Data<-fread("~/Desktop/Data_Sets/Computational_Predictor_Scores/DeMaSk.csv")
+DeMaSk_Data$hgvs_pro<-paste0(DeMaSk_Data$WT,DeMaSk_Data$pos,DeMaSk_Data$var)
+DeMaSk_Data$hgvs_pro <- sub("^", "p.", DeMaSk_Data$hgvs_pro)
+DeMaSk_Data<-DeMaSk_Data[,c(8,4)]
+colnames(DeMaSk_Data)[2]<-"DeMaSk"
+DeMaSk_Data$DeMaSk<-DeMaSk_Data$DeMaSk*-1
+
+ESM1_Data<-fread("~/Desktop/Data_Sets/Computational_Predictor_Scores/ESM1b.csv")
+colnames(ESM1_Data)[1]<-"hgvs_pro"
+colnames(ESM1_Data)[2]<-"ESM1b"
+ESM1_Data$hgvs_pro <- sub("^", "p.", ESM1_Data$hgvs_pro )
+ESM1_Data<-ESM1_Data[,-c(3)]
+ESM1_Data$ESM1b<-ESM1_Data$ESM1b*-1
+
+REVEL_Data<-fread("~/Desktop/Data_Sets/Computational_Predictor_Scores/Ensembl.csv")
+REVEL_Data<-subset(REVEL_Data, select = c("AA",  "AA coord", "REVEL"))
+REVEL_Data$fromAA = substr(REVEL_Data$AA,1,1)
+REVEL_Data$toAA = stri_sub(REVEL_Data$AA,-1)
+REVEL_Data$toAA <-ifelse(REVEL_Data$toAA==REVEL_Data$fromAA, "=", REVEL_Data$toAA)
+REVEL_Data<-na.omit(REVEL_Data)
+REVEL_Data$hgvs_pro<-paste0(REVEL_Data$fromAA,REVEL_Data$`AA coord`,REVEL_Data$toAA)
+REVEL_Data$hgvs_pro <- sub("^", "p.", REVEL_Data$hgvs_pro)
+REVEL_Data<-REVEL_Data[,c(6,3)]
+REVEL_Data <- REVEL_Data[!duplicated(REVEL_Data), ]
+
+EVE_Data<-fread("~/Desktop/Data_Sets/Computational_Predictor_Scores/EVE.csv")
+EVE_Data<-EVE_Data[,-c(3:14)]
+colnames(EVE_Data)[1]<-"hgvs_pro"
+EVE_Data$hgvs_pro <- sub("^", "p.", EVE_Data$hgvs_pro )
+colnames(EVE_Data)[2]<-"EVE"
+
+VARITY_Data<-fread("~/Desktop/Data_Sets/Computational_Predictor_Scores/VARITY.csv")
+VARITY_Data$hgvs_pro<-paste0(VARITY_Data$"p.",VARITY_Data$aa_ref,VARITY_Data$aa_pos,VARITY_Data$aa_alt)
+VARITY_Data$hgvs_pro <- sub("^", "p.", VARITY_Data$hgvs_pro )
+VARITY_Data<-VARITY_Data[,-c(1:4,6:51)]
+
+Predictor_list <- list(DeMaSk_Data,ESM1_Data, EVE_Data, REVEL_Data, VARITY_Data)
+Computational_Predictors_Scores<-Reduce(function(x,y) merge(x,y, all=TRUE), Predictor_list)
+
+Computational_Predictors_Scores$hgvs_pro <- gsub("A", "Ala", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("R", "Arg", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("N", "Asn", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("D", "Asp", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("C", "Cys", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("Q", "Gln", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("E", "Glu", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("G", "Gly", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("H", "His", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("I", "Ile", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("L", "Leu", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("K", "Lys", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("M", "Met", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("F", "Phe", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("P", "Pro", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("S", "Ser", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("T", "Thr", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("W", "Trp", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("Y", "Tyr", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- gsub("V", "Val", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- sub("Glyln", "Gln", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- sub("Glylu", "Glu", Computational_Predictors_Scores$hgvs_pro)
+Computational_Predictors_Scores$hgvs_pro <- sub("Prohe", "Phe", Computational_Predictors_Scores$hgvs_pro)
+
+Ref_Set<-fread("~/Desktop/Data_Sets/Reference_Data/Test_Set.csv")
+Ref_Set<-Ref_Set[, c(1,4, 6)]
+Ref_Set<-subset(Ref_Set, `clinical annotation` != "VUS" & `clinical annotation` != "Conflicting")
+Ref_Variants_filtered <- Ref_Set[Ref_Set$pos >= 1 & Ref_Set$pos <= 159 | Ref_Set$pos >= 216 & !(Ref_Set$pos %in% c(255, 355)), ]
+colnames(Ref_Set)[3]<-"Pathogenic"
+colnames(Ref_Variants_filtered)[3]<-"Pathogenic"
+
+Map_vs_Predictor_Scores<-merge(Combined_Map_Data, Computational_Predictors_Scores, by="hgvs_pro")
+
+Map_vs_Predictor_Scores_unfiltered<-merge(Map_vs_Predictor_Scores, Ref_Set, by = "hgvs_pro")
+Map_vs_Predictor_Scores_unfiltered <- Map_vs_Predictor_Scores_unfiltered[!duplicated(Map_vs_Predictor_Scores_unfiltered$hgvs_pro), ]
+Map_vs_Predictor_Scores_filtered<-merge(Map_vs_Predictor_Scores, Ref_Variants_filtered, by = "hgvs_pro")
+Map_vs_Predictor_Scores_filtered <- Map_vs_Predictor_Scores_filtered[!duplicated(Map_vs_Predictor_Scores_filtered$hgvs_pro), ]
+
+Maps_unfiltered <- merge(merge(merge(Combined_Map_Data, uHMBS_Map_Data, by = "hgvs_pro"), eHMBS_Map_Data, by = "hgvs_pro"), Ref_Set, by = "hgvs_pro")
+Maps_filtered <- merge(merge(merge(Combined_Map_Data, uHMBS_Map_Data, by = "hgvs_pro"), eHMBS_Map_Data, by = "hgvs_pro"), Ref_Variants_filtered, by = "hgvs_pro")
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+##Select filtered or unfiltered values:
+Map_vs_Predictor_Scores<-Map_vs_Predictor_Scores_filtered
+#Map_vs_Predictor_Scores<-Map_vs_Predictor_Scores_unfiltered
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#ROC Curves curves for map and computational predictor scores
+ROCdata <- Map_vs_Predictor_Scores[,c(9,2:7)]
+ROCdata$Pathogenic<-ROCdata$Pathogenic == "Pathogenic"
+ROCdata<-na.omit(ROCdata)
+colnames(ROCdata)[1]<-"outcome"
+
+roc_Combined <- roc(ROCdata[["outcome"]], ROCdata[["combined_score"]])
+roc_DeMaSk <- roc(ROCdata[["outcome"]], ROCdata[["DeMaSk"]])
+roc_ESM1b <- roc(ROCdata[["outcome"]], ROCdata[["ESM1b"]])
+roc_EVE <- roc(ROCdata[["outcome"]], ROCdata[["EVE"]])
+roc_REVEL <- roc(ROCdata[["outcome"]], ROCdata[["REVEL"]])
+roc_VARITY_R <- roc(ROCdata[["outcome"]], ROCdata[["VARITY_R"]])
+
+plot(roc_Combined, print.auc=FALSE, col="lightpink", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, main="Map vs best computational predictors, dataset of 55 missense variants")
+plot(roc_DeMaSk, print.auc=FALSE, col="red", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.3, grid=TRUE, add=TRUE)
+plot(roc_ESM1b, print.auc=FALSE, col="darkgreen", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, add=TRUE)
+plot(roc_EVE, print.auc=FALSE, col="darkblue", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, add=TRUE)
+plot(roc_REVEL, print.auc=FALSE, col="lightblue", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, add=TRUE)
+plot(roc_VARITY_R, print.auc=FALSE, col="orange", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.3, grid=TRUE, add=TRUE)
+
+text(0.4, 0.4, paste("AUC for Combined Map:", round(roc_Combined$auc, 3)), col="lightpink")
+text(0.4, 0.35, paste("AUC for DeMaSk:", round(roc_DeMaSk$auc, 3)), col="red")
+text(0.4, 0.3, paste("AUC for ESM1b:", round(roc_ESM1b$auc, 3)), col="darkgreen")
+text(0.4, 0.3, paste("AUC for EVE:", round(roc_EVE$auc, 3)), col="darkblue")
+text(0.4, 0.3, paste("AUC for REVEL:", round(roc_REVEL$auc, 3)), col="lightblue")
+text(0.4, 0.25, paste("AUC for VARITY_R:", round(roc_VARITY_R$auc, 3)), col="orange")
+
+#ROC Curves curves for map scores and computational predictors, excluding REVEL 
+ROCdata <- Map_vs_Predictor_Scores[,c(9,2:5,7)]
+ROCdata$Pathogenic<-ROCdata$Pathogenic == "Pathogenic"
+ROCdata<-na.omit(ROCdata)
+colnames(ROCdata)[1]<-"outcome"
+
+roc_Combined <- roc(ROCdata[["outcome"]], ROCdata[["combined_score"]])
+roc_DeMaSk <- roc(ROCdata[["outcome"]], ROCdata[["DeMaSk"]])
+roc_ESM1b <- roc(ROCdata[["outcome"]], ROCdata[["ESM1b"]])
+roc_EVE <- roc(ROCdata[["outcome"]], ROCdata[["EVE"]])
+roc_VARITY_R <- roc(ROCdata[["outcome"]], ROCdata[["VARITY_R"]])
+
+plot(roc_Combined, print.auc=FALSE, col="lightpink", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, main="Map vs best computational predictors, dataset of 55 missense variants")
+plot(roc_DeMaSk, print.auc=FALSE, col="red", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.3, grid=TRUE, add=TRUE)
+plot(roc_ESM1b, print.auc=FALSE, col="darkgreen", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, add=TRUE)
+plot(roc_EVE, print.auc=FALSE, col="darkblue", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, add=TRUE)
+plot(roc_VARITY_R, print.auc=FALSE, col="orange", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.3, grid=TRUE, add=TRUE)
+
+text(0.4, 0.4, paste("AUC for Combined Map:", round(roc_Combined$auc, 3)), col="lightpink")
+text(0.4, 0.35, paste("AUC for DeMaSk:", round(roc_DeMaSk$auc, 3)), col="red")
+text(0.4, 0.3, paste("AUC for ESM1b:", round(roc_ESM1b$auc, 3)), col="darkgreen")
+text(0.4, 0.3, paste("AUC for EVE:", round(roc_EVE$auc, 3)), col="darkblue")
+text(0.4, 0.25, paste("AUC for VARITY_R:", round(roc_VARITY_R$auc, 3)), col="orange")
+
+#ROC Curves curves for map scores and top predictors
+ROCdata <- Map_vs_Predictor_Scores[,c(9,2:4,7)]
+ROCdata$Pathogenic<-ROCdata$Pathogenic == "Pathogenic"
+ROCdata<-na.omit(ROCdata)
+colnames(ROCdata)[1]<-"outcome"
+
+roc_Combined <- roc(ROCdata[["outcome"]], ROCdata[["combined_score"]])
+roc_DeMaSk <- roc(ROCdata[["outcome"]], ROCdata[["DeMaSk"]])
+roc_ESM1b <- roc(ROCdata[["outcome"]], ROCdata[["ESM1b"]])
+roc_VARITY_R <- roc(ROCdata[["outcome"]], ROCdata[["VARITY_R"]])
+
+plot(roc_Combined, print.auc=FALSE, col="lightpink", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, main="Map vs best computational predictors, dataset of 55 missense variants")
+plot(roc_DeMaSk, print.auc=FALSE, col="red", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.3, grid=TRUE, add=TRUE)
+plot(roc_ESM1b, print.auc=FALSE, col="darkgreen", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.35, grid=TRUE, add=TRUE)
+plot(roc_VARITY_R, print.auc=FALSE, col="orange", lty=1, lwd=2, legacy.axes = TRUE, print.auc.y=.3, grid=TRUE, add=TRUE)
+
+text(0.4, 0.4, paste("AUC for Combined Map:", round(roc_Combined$auc, 3)), col="lightpink")
+text(0.4, 0.35, paste("AUC for DeMaSk:", round(roc_DeMaSk$auc, 3)), col="red")
+text(0.4, 0.3, paste("AUC for ESM1b:", round(roc_ESM1b$auc, 3)), col="darkgreen")
+text(0.4, 0.25, paste("AUC for VARITY_R:", round(roc_VARITY_R$auc, 3)), col="orange")
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+#Balanced PRC curves for map scores and all computational predictors 
+all_scores<-Map_vs_Predictor_Scores[,c(9,2:7)]
+all_scores$Pathogenic<-all_scores$Pathogenic == "Pathogenic"
+all_scores<-na.omit(all_scores)
+pathogenic_counts <- table(all_scores$Pathogenic)
+
+names(all_scores)[2] <- "Combined HMBS map"
+names(all_scores)[3] <- "DeMaSk"
+names(all_scores)[4] <- "ESM1b"
+names(all_scores)[5] <- "EVE"
+names(all_scores)[6] <- "REVEL"
+names(all_scores)[7] <- "VARITY_R"
+
+yrobj <- yr2(truth=all_scores$Pathogenic,scores=all_scores[,-1])
+draw.prc(yrobj, balanced=TRUE, main="",col=c("lightpink","red", "darkgreen", "darkblue","lightblue", "orange"))
+
+aucSignif <- auprc.signif(yrobj)
+abline(h=90, lty="dashed")
+
+#Balanced PRC curves for map scores and computational predictors, excluding REVEL 
+all_scores<-Map_vs_Predictor_Scores[,c(9,2:5,7)]
+all_scores$Pathogenic<-all_scores$Pathogenic == "Pathogenic"
+all_scores<-na.omit(all_scores)
+pathogenic_counts <- table(all_scores$Pathogenic)
+
+names(all_scores)[2] <- "Combined HMBS map"
+names(all_scores)[3] <- "DeMaSk"
+names(all_scores)[4] <- "ESM1b"
+names(all_scores)[5] <- "EVE"
+names(all_scores)[6] <- "VARITY_R"
+
+yrobj <- yr2(truth=all_scores$Pathogenic,scores=all_scores[,-1])
+draw.prc(yrobj, balanced=TRUE, main="", col=c("lightpink","red", "darkgreen","lightblue", "orange"))
+aucSignif <- auprc.signif(yrobj)
+abline(h=90, lty="dashed")
+
+#Balanced PRC curves for map scores and top predictors 
+all_scores<-Map_vs_Predictor_Scores[,c(9,2:4,7)]
+all_scores$Pathogenic<-all_scores$Pathogenic == "Pathogenic"
+all_scores<-na.omit(all_scores)
+pathogenic_counts <- table(all_scores$Pathogenic)
+
+names(all_scores)[2] <- "Combined HMBS map"
+names(all_scores)[3] <- "DeMaSk"
+names(all_scores)[4] <- "ESM1b"
+names(all_scores)[5] <- "VARITY_R"
+
+yrobj <- yr2(truth=all_scores$Pathogenic,scores=all_scores[,-1])
+draw.prc(yrobj, balanced=TRUE, main="", col=c("lightpink","red", "darkgreen", "orange"))
+aucSignif <- auprc.signif(yrobj)
+abline(h=90, lty="dashed")
+
+#Balanced PRC curves for map scores and reported enzymatic activity
+Specific_Activity_Data<-fread("~/Desktop/Data_Sets/HMBS_Biochemistry/Enzyme_Activity.csv")
+new_col_names <- as.character(Specific_Activity_Data[2, ])
+colnames(Specific_Activity_Data) <- new_col_names
+Specific_Activity_Data <- Specific_Activity_Data[-c(1,2), ]
+Specific_Activity_Data <- Specific_Activity_Data[,c(1,5) ]
+Specific_Activity_Data$`activity relative to wt (%)` <- as.numeric(Specific_Activity_Data$`activity relative to wt (%)`)
+
+invitro_activity_mean<-Specific_Activity_Data[, .(sum(`activity relative to wt (%)`)/(length(`activity relative to wt (%)`))), by = "HGVS"]
+colnames(invitro_activity_mean)[1] <- "hgvs_pro"
+colnames(invitro_activity_mean)[2] <- "activity"
+
+Comparison<-merge(invitro_activity_mean,Map_vs_Predictor_Scores, by="hgvs_pro", na.omit=TRUE)
+Comparison$"%Activity"<-Comparison$activity/100
+Comparison$"%Activity"[Comparison$"%Activity" > 1] <- 1
+Comparison$`%Activity`<-Comparison$`%Activity`*-1
+Comparison<-Comparison[,c(10,11,3)]
+Comparison$Pathogenic<-Comparison$Pathogenic == "Pathogenic"
+pathogenic_counts <- table(Comparison$Pathogenic)
+
+names(Comparison)[2] <- "Enzymatic activity"
+names(Comparison)[3] <- "Combined HMBS map"
+
+yrobj <- yr2(truth=Comparison$Pathogenic,scores=Comparison[,-1])
+draw.prc(yrobj, balanced=TRUE, main="Activity vs Map", col=c("purple", "lightpink"))
+aucSignif <- auprc.signif(yrobj)
+abline(h=90, lty="dashed")
+
+#:::::::::::::::::::::::::::::::::::::::::::::::::::
+##Examine functionality scores by known interpretation
+Combined_Map_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Combined_Map_Data<-Combined_Map_Data[,-c(3)]
+colnames(Combined_Map_Data)[2]<-"combined_score"
+
+Ref_Data <- fread("~/Desktop/Data_Sets/Reference_Data/Test_Set.csv")
+Ref_Data <- merge(Ref_Data, Combined_Map_Data, by = "hgvs_pro")
+Ref_Data$combined_score <- as.numeric(Ref_Data$combined_score)
+Ref_Data<-na.omit(Ref_Data)
+
+Ref_Data$`clinical annotation` <- factor(Ref_Data$`clinical annotation`, levels = c("Pathogenic", "Benign", "VUS", "Conflicting"))
+
+#Plots (box and beeswarm) functionality scores by known interpretation
+Ref_Data$color <- ifelse(Ref_Data$pos %in% c(160:215, 255, 355), "Red", "Black")
+ggplot(Ref_Data, aes(x = `clinical annotation`, y = combined_score)) +
+  theme_classic() +
+  geom_boxplot() +
+  geom_jitter(position = position_jitter(width = 0.2), aes(color = color), alpha = 0.70) +
+  ylab("Functionality Score") +
+  labs(title = "Functionality scores for known variants (by interpretation)") +
+  scale_color_manual(values = c("Black" = "black", "Red" = alpha("red", 0.75))) +
+guides(color = "none")
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+#Examination of discordance between combined map scores and known variant interpretations
+combined_ESM1b_Scores_Path_Ben<- Map_vs_Predictor_Scores_unfiltered
+combined_ESM1b_Scores_Path_Ben<-combined_ESM1b_Scores_Path_Ben[, c(1,2,4,8,9)]
+names(combined_ESM1b_Scores_Path_Ben)[2] <- "score"
+
+## Compare scores (map and predictor) for annotated variants
+color_regions <- data.frame(xstart = c(0, 120, 219, 239),
+                            xend = c(119, 218, 238, 361),
+                            color = c("#BAC4DA", "#E1E1E1", "#BAC4DA", "#B1CBCB"))
+
+# Create the top plot for the score values
+ggplot(combined_ESM1b_Scores_Path_Ben, aes(x = pos, color = Pathogenic, shape = Pathogenic)) +
+  geom_rect(data = color_regions, aes(xmin = xstart, xmax = xend, ymin = -Inf, ymax = Inf, fill = color), alpha = 0.5, inherit.aes = FALSE) +
+  geom_line(aes(y = -score, linetype = "score")) +
+  geom_point(aes(y = -score), linetype = "Combined_Scores") +
+  theme_classic() +
+  labs(x = "Position", y = "Score") +
+  scale_fill_manual(values = c("#B1CBCB", "#BAC4DA", "#E1E1E1"), labels = c("Region 3", "Region 1", "Region 2")) +
+    scale_color_manual(values = c("Benign" = alpha("darkblue", 0.75), "Pathogenic" = alpha("darkred", 0.5))) +
+  theme(plot.margin = margin(0, 0, 0, 0))
+  theme(plot.margin = margin(0.5, 0, 0, 0))
+
+# Create the bottom plot for the flipped ESM1b values
+ggplot(combined_ESM1b_Scores_Path_Ben, aes(x = pos, color = Pathogenic, shape = Pathogenic)) +
+  geom_rect(data = color_regions, aes(xmin = xstart, xmax = xend, ymin = -Inf, ymax = Inf, fill = color), alpha = 0.5, inherit.aes = FALSE) +
+  geom_line(aes(y = -ESM1b, linetype = "ESM1b")) +
+  geom_point(aes(y = -ESM1b), linetype = "ESM1b") +
+  theme_classic() +
+  labs(x = "Position", y = "Score") +
+  scale_fill_manual(values = c("#B1CBCB", "#BAC4DA", "#E1E1E1"), labels = c("Region 3", "Region 1", "Region 2")) +
+    scale_linetype_manual(values = c("ESM1b" = "dashed")) +
+    scale_color_manual(values = c("Benign" = alpha("darkblue", 0.75), "Pathogenic" = alpha("darkred", 0.5))) +
+  theme(plot.margin = margin(0, 0, 0, 0))
+  theme(plot.margin = margin(0.5, 0, 0, 0))
+
+#::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+
+```
+
+```{r}
+##########################################################
+# Score transformation loglikehood ratios of pathogenicity
+##########################################################
+Combined_Map_Scores <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+
+Ref_Set<-fread("~/Desktop/Data_Sets/Reference_Data/Test_Set.csv")
+Ref_Set<- subset(Ref_Set, `clinical annotation` != "VUS")
+colnames(Ref_Set)[6]<-"Pathogenic"
+Ref_Set<-merge(Ref_Set, Combined_Map_Scores, by = "hgvs_pro")
+Ref_Set<-Ref_Set[,c(6,7)]
+LLR_Ref<- Ref_Set %>%
+  mutate(Benign = if_else(Pathogenic == "Benign", score, NA_real_),
+         Pathogenic = if_else(Pathogenic == "Pathogenic", score, NA_real_))
+LLR_Ref<-LLR_Ref[,-c(2)]
+
+posScores <- LLR_Ref$Pathogenic
+negScores <- LLR_Ref$Benign
+negScores<-na.omit(negScores)
+posScores<-na.omit(posScores)
+
+llr <- buildLLR.kernel(posScores,negScores,bw="bcv",kernel="epanechnikov")
+
+drawDensityLLR(c(posScores,negScores),llr$llr,llr$posDens,llr$negDens,posScores,negScores)
+
+Scores <- Combined_Map_Scores$Score
+result <- llr$llr(Scores)
+
+bins <- c(-Inf,seq(-4,2,0.15),Inf)
+cmap <- colmap(c(-2,0,1.0),colStops=c("chartreuse3","gold","firebrick3"))
+binColors <- cmap(bins)
+columns <- c("score")
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::
+#Determine evidence provided by functional impact scores
+VUS<-fread("~/Desktop/Data_Sets/Reference_Data/Test_Set.csv")
+VUS<-subset(VUS, `clinical annotation` == "VUS")
+LLRs <- fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/LLR_Scores.csv")
+Evidence_Data <-merge(LLRs, VUS, by = "hgvs_pro")
+Evidence_Data$Evidence_Strength <- ifelse(Evidence_Data$llr>1.2723233 & Evidence_Data$llr<2.5446467, "strongly pathogenic",
+                          ifelse(Evidence_Data$llr>0.636167 & Evidence_Data$llr<1.2723233, "moderately pathogenic",
+                                 ifelse(Evidence_Data$llr>0.3180808 & Evidence_Data$llr<0.636167, "pathogenic support",
+                                        ifelse(Evidence_Data$llr>(-1.2723233) & Evidence_Data$llr<(-0.3180808), "benign support",
+                                               ifelse(Evidence_Data$llr<(-1.2723233), "strongly benign", "indeterminate")))))
+
+strong_patho<-(sum(Evidence_Data$Evidence_Strength== "strongly pathogenic"))/length(Evidence_Data$Evidence_Strength)
+moderate_patho<-(sum(Evidence_Data$Evidence_Strength== "moderately pathogenic"))/length(Evidence_Data$Evidence_Strength)
+supporting_patho<-(sum(Evidence_Data$Evidence_Strength== "pathogenic support"))/length(Evidence_Data$Evidence_Strength)
+supporting_ben<-(sum(Evidence_Data$Evidence_Strength== "benign support"))/length(Evidence_Data$Evidence_Strength)
+strong_ben<-(sum(Evidence_Data$Evidence_Strength== "strongly benign"))/length(Evidence_Data$Evidence_Strength)
+indeterminate<-(sum(Evidence_Data$Evidence_Strength== "indeterminate"))/length(Evidence_Data$Evidence_Strength)
+total<-strong_ben+strong_patho+moderate_patho+supporting_ben+supporting_patho+indeterminate
+
+table(Evidence_Data$Evidence_Strength)
+# :::::::::::::::::::::::::::::::::::::::::::::::::::
+```
+
+```{r}
+######################################################################
+# Correlation of map functional scores with onset and disease severity
+######################################################################
+#Correlation of map functional scores with disease severity
+Combined_Map_Scores <- read.csv("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Disease_Severity_Data <-read.csv("~/Desktop/Data_Sets/Reference_Data/Disease_Severity.csv")
+setnames(Disease_Severity_Data, old = colnames(Disease_Severity_Data), new = unlist(Disease_Severity_Data[1, ]))
+Disease_Severity_Data <- Disease_Severity_Data[-c(1), ]
+Symptom_Corr<-merge(Combined_Map_Scores,Disease_Severity_Data,by="hgvs_pro")      
+Symptom_Corr$sd<-((sqrt(Symptom_Corr$score))*Symptom_Corr$se)
+
+x.sd<-Symptom_Corr$sd
+x<-Symptom_Corr$score
+y<-Symptom_Corr$Rating
+y <- as.numeric(y)
+
+#A scatterplot of functionality scores and disease severity ranking
+plot(x,y, xlab="functionality score", ylab="disease severity", pch=19, main="Correlation between functionality scores and disease severity")
+cor.test(x, y,method = "spearman")
+cor.test(x, y,method = "pearson")
+abline(lm(y ~ x), col = "blue", lwd = 1)
+
+# :::::::::::::::::::::::::::::::::::::::::::::::::::
+#Correlation of map functional scores with age of disease onset
+Combined_Map_Scores<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Age_of_Onset_Data<-fread("~/Desktop/Data_Sets/Reference_Data/Age_of_Disease_Onset.csv")
+Age_of_Onset_Data<-Age_of_Onset_Data[-c(1:2),]
+colnames(Age_of_Onset_Data)[1]<-"Age"
+colnames(Age_of_Onset_Data)[2]<-"hgvs_pro"
+Age_of_Onset_Data$Age<-as.numeric(Age_of_Onset_Data$Age)
+Age_of_Onset_Data$hgvs_pro <- sub("A", "Ala",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("R", "Arg",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("N", "Asn",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("D", "Asp",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("C", "Cys",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("Q", "Gln",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("E", "Glu",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("G", "Gly",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("H", "His",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("I", "Ile",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("L", "Leu",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("K", "Lys",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("M", "Met",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("F", "Phe",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("P", "Pro",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("S", "Ser",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("T", "Thr",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("W", "Trp",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("Y", "Tyr",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("V", "Val",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("Glyln", "Gln",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("Glylu", "Glu",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("Prohe", "Phe",Age_of_Onset_Data$hgvs_pro)
+Age_of_Onset_Data$hgvs_pro <- sub("X", "Ter",Age_of_Onset_Data$hgvs_pro)
+
+Age_of_Onset_Data_mean<-Age_of_Onset_Data[,.(sum(Age)/(length(Age))), by="hgvs_pro"]
+colnames(Age_of_Onset_Data_mean)[2] <- "Age"
+
+Age_of_Onset_Data_data<-merge(Age_of_Onset_Data_mean, Combined_Map_Scores, by = "hgvs_pro")
+
+#A scatterplot of functionality scores and age of disease onset
+x<-Age_of_Onset_Data_data$score
+y<-Age_of_Onset_Data_data$Age
+plot(x,y, xlab="functionality score", ylab="age of Age_of_Onset_Data", pch=19, main="Correlation between functionality scores and age of disease onset")
+cor.test(y,x,method = "spearman")
+cor.test(y, x,method = "pearson")
+abline(lm(y ~ x), col = "blue", lwd = 1)
+# :::::::::::::::::::::::::::::::::::::::::::::::::::
+```
+
+```{r}
+##########################################################################################
+# Determine if population databases are depleted for similar low-scoring missense variants
+##########################################################################################
+Combined_Map_Data<-fread("~/Desktop/Data_Sets/HMBS_Functional_Scores/Combined_Scores_Floored.csv")
+Combined_Map_Data<-Combined_Map_Data[,-c(3)]
+colnames(Combined_Map_Data)[2]<-"Combined_Map"
+Functional_missense_subset<-Combined_Map_Data[Combined_Map_Data$Combined_Map > 0.9 & Combined_Map_Data$Combined_Map < 1.1]
+Deleterious_missense_subset<-Combined_Map_Data[Combined_Map_Data$Combined_Map  < 0.1]
+
+Ref_Set<-fread("~/Desktop/Data_Sets/Reference_Data/Test_Set.csv")
+Ref_Set<-Ref_Set[, c(1,4, 6)]
+Ref_Set<-subset(Ref_Set, `clinical annotation` != "VUS" & `clinical annotation` != "Conflicting")
+Ref_Variants_filtered <- Ref_Set[Ref_Set$pos >= 1 & Ref_Set$pos <= 159 | Ref_Set$pos >= 216 & !(Ref_Set$pos %in% c(255, 355)), ]
+variant_info<-merge(Ref_Set,Combined_Map_Data, by = "hgvs_pro")
+patho_subset<-variant_info[variant_info$`clinical annotation` == "Pathogenic", c("hgvs_pro", "Combined_Map")]
+benign_subset<-variant_info[variant_info$`clinical annotation` == "Benign", c("hgvs_pro", "Combined_Map")]
+
+UKBB_Data<-fread("~/Desktop/Data_Sets/Reference_Data/UKB_Variants.csv")
+UKBB_Data$hgvs_pro <- paste0(substr(UKBB_Data$Amino_acids, 1, 1),UKBB_Data$Protein_position, substr(UKBB_Data$Amino_acids, nchar(UKBB_Data$Amino_acids), nchar(UKBB_Data$Amino_acids)))
+UKBB_Data$hgvs_pro <- sub("^", "p.", UKBB_Data$hgvs_pro )
+UKBB_Data<-UKBB_Data[, c("hgvs_pro", "UKB_AF")]
+
+UKBB_Data$hgvs_pro <- gsub("A", "Ala", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("R", "Arg", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("N", "Asn", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("D", "Asp", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("C", "Cys", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("Q", "Gln", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("E", "Glu", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("G", "Gly", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("H", "His", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("I", "Ile", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("L", "Leu", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("K", "Lys", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("M", "Met", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("F", "Phe", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("P", "Pro", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("S", "Ser", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("T", "Thr", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("W", "Trp", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("Y", "Tyr", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- gsub("V", "Val", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- sub("Glyln", "Gln", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- sub("Glylu", "Glu", UKBB_Data$hgvs_pro)
+UKBB_Data$hgvs_pro <- sub("Prohe", "Phe", UKBB_Data$hgvs_pro)
+
+#Examining correlation between allele frequency and map scores 
+Map_UKB<-merge(Combined_Map_Data, UKBB_Data, by = "hgvs_pro")
+
+missense_freq_annotated<-merge(Ref_Set, Map_UKB , by="hgvs_pro", all = TRUE)
+missense_freq_annotated <- missense_freq_annotated[complete.cases(missense_freq_annotated[, c("Combined_Map", "UKB_AF")]), ]
+missense_freq_annotated$Combined_Map <- ifelse(missense_freq_annotated$Combined_Map > 1.05, 1/missense_freq_annotated$Combined_Map, missense_freq_annotated$Combined_Map)
+
+##A scatterplot of functionality scores and variant frequency (UKBioBank & gnomAD)
+GeneralCol<-c(alpha("black", 0.5))
+plot(missense_freq_annotated$Combined_Map, missense_freq_annotated$UKB_AF,
+     maxFreq = NULL, xlim = range(missense_freq_annotated$Combined_Map, na.rm = TRUE),
+     ylim = range(missense_freq_annotated$UKB_AF, na.rm = TRUE), ylab = "UKB Allele Frequency",
+     xlab = "Functionality Score", pch = 16, main = "Correlation between functionality scores and allele frequencies",
+     log = "y", col = GeneralCol)
+
+colors <- ifelse(missense_freq_annotated$`clinical annotation` == "Pathogenic", "blue",
+                 ifelse(missense_freq_annotated$`clinical annotation` == "Benign", "red", GeneralCol))
+
+points(missense_freq_annotated$Combined_Map, missense_freq_annotated$UKB_AF,
+       pch = 16, col = colors)
+
+legend("topright", legend = c("Pathogenic", "Benign", "NA"), pch = 16,
+       col = c("blue", "red", GeneralCol),
+       title = "Pathogenicity", bty = "n")
+
+correlation_coefficient <- cor(missense_freq_annotated$Combined_Map, missense_freq_annotated$UKB_AF, method = "pearson")
+print(paste("Correlation coefficient:", correlation_coefficient))
+cor.test(missense_freq_annotated$Combined_Map, missense_freq_annotated$UKB_AF, method = "spearman")
+
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+# Odd ratios of low-scoring missense variants in a human population database
+Functional_missense_subset<-Combined_Map_Data[Combined_Map_Data$Combined_Map > 0.5 & Combined_Map_Data$Combined_Map < 1.1]
+Deleterious_missense_subset<-Combined_Map_Data[Combined_Map_Data$Combined_Map  <= 0.5]
+
+#Evaluate missense variants (odd ratios) grouped as functional or deleterious
+Complete_Functional_hgvs_pro <- unique(Functional_missense_subset$hgvs_pro)
+UKBB_hgvs_pro <- unique(UKBB_Data$hgvs_pro)
+not_observed_Complete_Functional <- setdiff(Complete_Functional_hgvs_pro, UKBB_hgvs_pro)
+odds_ratio_Complete_Data<-data.frame(Complete_Functional_hgvs_pro)
+odds_ratio_Complete_Data$UKB.Presence <- ifelse(odds_ratio_Complete_Data$Complete_Functional_hgvs_pro %in% not_observed_Complete_Functional, "No", "Yes")
+odds_ratio_Complete_Data$Variant_Status<-"Functional"
+no_frequency_Complete_Functional <- sum(odds_ratio_Complete_Data$UKB.Presence == "No") / length(odds_ratio_Complete_Data$UKB.Presence)
+colnames(odds_ratio_Complete_Data)[1]<-"hgvs_pro"
+odds_ratio_Complete_Data<-merge(odds_ratio_Complete_Data, Combined_Map_Data, by = "hgvs_pro")
+colnames(odds_ratio_Complete_Data)[4]<-"score"
+
+Complete_Deleterious_hgvs_pro <- unique(Deleterious_missense_subset$hgvs_pro)
+not_observed_Complete_Deleterious <- setdiff(Complete_Deleterious_hgvs_pro, UKBB_hgvs_pro)
+Complete_Deleterious_Data<-data.frame(Complete_Deleterious_hgvs_pro)
+Complete_Deleterious_Data$UKB.Presence <- ifelse(Complete_Deleterious_Data$Complete_Deleterious_hgvs_pro %in% not_observed_Complete_Deleterious, "No", "Yes")
+Complete_Deleterious_Data$Variant_Status<-"Deleterious"
+no_frequency_Complete_Deleterious <- sum(Complete_Deleterious_Data$UKB.Presence == "No") / length(Complete_Deleterious_Data$UKB.Presence)
+colnames(Complete_Deleterious_Data)[1]<-"hgvs_pro"
+Complete_Deleterious_Data<-merge(Complete_Deleterious_Data, Combined_Map_Data, by = "hgvs_pro")
+colnames(Complete_Deleterious_Data)[4]<-"score"
+
+odds_ratio_Complete_Data<-rbind(odds_ratio_Complete_Data, Complete_Deleterious_Data)
+odds_ratio_Complete_Data$UKB_Presence <- factor(odds_ratio_Complete_Data$UKB.Presence, levels = c("No", "Yes"))
+
+#Odd ratios table for missense variants grouped as functional or deleterious
+odds_table_Complete <- odds_ratio_Complete_Data %>%
+  group_by(Variant_Status, UKB_Presence, .drop = TRUE) %>%
+  summarise(Frequency = n(), .groups = "drop") %>%
+  pivot_wider(names_from = UKB_Presence, values_from = Frequency, values_fill = 0) %>%
+  mutate(
+    Odds_Ratio = No / Yes,  
+    Odds_Ratio_Label = paste0(round(Odds_Ratio, 2), " (", Yes, "-", No, ")"),
+    CI_Lower = exp(log(Odds_Ratio) - 1.96 * sqrt(1 / Yes + 1 / No)),
+    CI_Upper = exp(log(Odds_Ratio) + 1.96 * sqrt(1 / Yes + 1 / No)) 
+  )
+OR<-(odds_table_Complete$Odds_Ratio[1])/(odds_table_Complete$Odds_Ratio[2])
+
+# Perform Fisher exact test
+fisher_result <- fisher.test(matrix(c(odds_table_Complete$No, odds_table_Complete$Yes), nrow = 2))
+odds_table_Complete_p_value <- fisher_result$p.value
+
+##Plots of variants (deleterious or functional) odd ratios for being in population databases
+ggplot(odds_table_Complete, aes(x = Variant_Status, y = Odds_Ratio, fill = Variant_Status)) +
+  geom_bar(stat = "identity", width = 0.5, position = "dodge") +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2, position = position_dodge(width = 0.5)) +
+  geom_text(aes(label = Odds_Ratio_Label), vjust = -0.5, size = 3) +
+  geom_text(aes(label = paste0("[", round(CI_Lower, 2), "-", round(CI_Upper, 2), "]")), 
+            position = position_dodge(width = 0.5), vjust = -1, size = 3, color = "black") +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9")) +
+  labs(x = "Variant Status", y = "Odds Ratio", fill = "Variant Status") +
+  theme_minimal()
+# ::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+

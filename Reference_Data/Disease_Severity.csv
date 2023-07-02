@@ -1,0 +1,16 @@
+"Curated AIP severity scores (3__= mild disease, 2 = moderate disease, 1 = severe disease) from: Fu, Y. et al. Systematically Analyzing the Pathogenic Variations for Acute Intermittent Porphyria. Front. Pharmacol. 10, 1018 (2019)",,
+hgvs_pro,Severity,Rating
+p.Arg116Trp,Severe,1
+p.Arg173Trp,Severe,1
+p.Arg149Ter,Severe,1
+p.Gln217His,Severe,1
+p.Ala330Pro,Severe,1
+p.Ala219Pro,Severe,1
+p.Arg26Cys,Moderate,2
+p.Asp99Asn,Moderate,2
+p.Gly168Ter,Moderate,2
+p.Gln194Ter,Moderate,2
+p.Gly221Asp,Moderate,2
+p.Thr35Met,Mild,3
+p.Gly111Arg,Mild,3
+p.Leu238Pro,Mild,3
